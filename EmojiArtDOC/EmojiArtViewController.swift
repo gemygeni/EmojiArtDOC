@@ -23,6 +23,8 @@ extension EmojiArt.EmojiInfo{
 
 class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScrollViewDelegate, UICollectionViewDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UICollectionViewDragDelegate, UICollectionViewDropDelegate {
     
+    
+    
     // MARK: - Model
    
     var emojiArt: EmojiArt? {
@@ -55,7 +57,10 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
         }
     }
             // MARK: - story Board
-               var emojiArtView = EmojiArtView()
+     var emojiArtView = EmojiArtView()
+       
+    
+    
                var _emojiArtURL : URL?
                
                var emojiArtBackgroundImage : (url :URL? ,image : UIImage?){
@@ -80,31 +85,61 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
    // MARK: - Documentation
    var document : EmojiArtDocument?
     
-     @IBAction func save(_ sender: UIBarButtonItem? = nil) {
-         document?.emojiArt = emojiArt
-         if  document?.emojiArt != nil {
-             document?.updateChangeCount(.done)
-         }
-     }
+    @IBAction func documentChanged(_ sender: UIBarButtonItem? = nil) {
+        document?.emojiArt = emojiArt
+        if  document?.emojiArt != nil {
+            document?.updateChangeCount(.done)
+        }
+    }
+    
+   
      
-     @IBAction func close(_ sender: UIBarButtonItem) {
-         save()
+     @IBAction func close (_ sender: UIBarButtonItem? = nil) {
+        if let observer = EmojiArtViewObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
          
          if document?.emojiArt != nil {
              document?.thumbnail = emojiArtView.snapshot
          }
          
          dismiss(animated: true) {
-             self.document?.close()
+            // when our document completes closing
+            // stop observing its documentState changes
+            self.document?.close{
+                success in
+                if let documentObsever = self.documentObserver{
+                    NotificationCenter.default.removeObserver(documentObsever)
+                }
+                
+            }
          }
      }
      
+    var documentObserver : NSObjectProtocol?
+    var EmojiArtViewObserver : NSObjectProtocol?
+    
      override func viewWillAppear(_ animated: Bool) {
          super.viewWillAppear(animated)
-         document?.open { success in
+        // when we are about to appear
+        // start monitoring our document's documentState
+        documentObserver = NotificationCenter.default.addObserver(forName: UIDocument.stateChangedNotification,
+                                                                  object: document,
+                                                                  queue: OperationQueue.main,
+                                                                  using: {
+                                                                    notification in
+                                                                    print("documentState changed to \(self.document!.documentState)")
+        })
+                 document?.open { success in
              if success {
                  self.title = self.document?.localizedName
                  self.emojiArt = self.document?.emojiArt
+                self.EmojiArtViewObserver = NotificationCenter.default.addObserver(forName: .EmojiArtViewDidChange,
+                                                                                   object: self.emojiArtView,
+                                                                                   queue: OperationQueue.main,
+                                                                                   using: {
+                                                                                    notification in self.documentChanged()
+                })
              }
          }
      }
@@ -118,7 +153,51 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
 //        document = EmojiArtDocument(fileURL: url)
 //      }
 //   }
-//   
+    private var suppressBadURLWarnings = false
+       
+       private func presentBadURLWarning(for url: URL?) {
+           if !suppressBadURLWarnings {
+               let alert = UIAlertController(
+                   title: "Image Transfer Failed",
+                   message: "Couldn't transfer the dropped image from its source.\nShow this warning in the future?",
+                   preferredStyle: .alert
+               )
+               alert.addAction(UIAlertAction(
+                   title: "Keep Warning",
+                   style: .default
+               ))
+               alert.addAction(UIAlertAction(
+                   title: "Stop Warning",
+                   style: .destructive,
+                   handler: { action in
+                       self.suppressBadURLWarnings = true
+                   }
+               ))
+               present(alert, animated: true)
+           }
+       }
+    
+    
+    //this func used in delegation instead of proadcasting
+// func emojiArtViewDidChange(_ sender: EmojiArtView) {
+//              documentChanged()
+// }
+//
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     
     @IBOutlet weak var dropZone: UIView!{
         didSet{
@@ -139,17 +218,29 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
         imageFetcher = ImageFetcher(){ (url , image) in
             DispatchQueue.main.async {
                 self.emojiArtBackgroundImage = (url ,image)
-                
+                self.documentChanged()
             }
         }
-        
-        session.loadObjects(ofClass: NSURL.self){
-            nsurls in
-            if let url = nsurls.first as? URL{
-                self.imageFetcher.fetch(url)
-            }
-        }
-        
+         session.loadObjects(ofClass: NSURL.self) { nsurls in
+                   if let url = nsurls.first as? URL {
+                       // stop using ImageFetcher
+                       // self.imageFetcher.fetch(url)
+                       // fetch the URL normally (off the main thread, of course)
+                       DispatchQueue.global(qos: .userInitiated).async {
+                           if let imageData = try? Data(contentsOf: url.imageURL), let image = UIImage(data: imageData) {
+                               DispatchQueue.main.async {
+                                   // successfully fetched the image!
+                                   self.emojiArtBackgroundImage = (url, image)
+                                   self.documentChanged()
+                               }
+                           } else {
+                               // if the dropped URL can't be fetched
+                               // alert the user
+                               self.presentBadURLWarning(for: url)
+                           }
+                       }
+                   }
+               }
         session.loadObjects(ofClass: UIImage.self){
             images in
             if let image = images.first as? UIImage {
@@ -198,9 +289,7 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
         }
     }
     
-    
-    
-    
+        
     
     // MARK: - collectionView Data Source
     private var addingEmoji = false
